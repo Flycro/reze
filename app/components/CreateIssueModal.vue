@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { CREATE_ISSUE_MUTATION, ADD_PROJECT_ITEM_MUTATION, MOVE_CARD_MUTATION, ORG_REPOS_QUERY } from '~/utils/queries'
 import type { CardData, ColumnOption } from '~/utils/types'
+import { adaptQuery, getOwner } from '~/utils/owner'
 
 const props = defineProps<{
   org: string
@@ -58,8 +59,9 @@ watch(open, async (isOpen) => {
 async function loadRepos() {
   loadingRepos.value = true
   try {
-    const data = await graphqlMutation<any>(ORG_REPOS_QUERY, { org: props.org })
-    const nodes = data.organization?.repositories?.nodes ?? []
+    const { ownerType } = useOwner()
+    const data = await graphqlMutation<any>(adaptQuery(ORG_REPOS_QUERY, ownerType.value), { org: props.org })
+    const nodes = getOwner(data, ownerType.value)?.repositories?.nodes ?? []
     repos.value = nodes
       .filter((r: any) => r && !r.isArchived)
       .map((r: any) => ({ id: r.id, name: r.name, nameWithOwner: r.nameWithOwner }))
