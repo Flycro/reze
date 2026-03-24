@@ -8,6 +8,7 @@ const props = defineProps<{
   currentColumnId: string | null
   org: string
   assigneeCounts: Map<string, number>
+  allCards: CardData[]
 }>()
 
 const emit = defineEmits<{
@@ -159,7 +160,16 @@ const bodyScrolled = ref(false)
 const timelineEvents = ref<DisplayEvent[]>([])
 const timelineLoading = ref(false)
 const isClosing = ref(false)
-const mentionResults = ref<Array<{ number: number; title: string; pull_request?: unknown }>>([])
+interface MentionResult {
+  label: string
+  sublabel?: string
+  icon: string
+  iconClass?: string
+  avatar?: string
+  insertText: string
+}
+
+const mentionResults = ref<MentionResult[]>([])
 const mentionIndex = ref(0)
 
 const textareaRef = ref<any>(null)
@@ -256,7 +266,6 @@ async function loadTimeline() {
 
 onUnmounted(() => {
   timelineAbort?.abort()
-  mentionController?.abort()
 })
 
 watch(() => props.card, () => {
@@ -268,8 +277,7 @@ watch(() => props.card, () => {
   loadTimeline()
 }, { immediate: true })
 
-async function openPopover() {
-  showPopover.value = true
+async function loadMembers() {
   if (orgMembers.value.length > 0 || isFetchingMembers.value) return
   isFetchingMembers.value = true
   try {
@@ -282,6 +290,11 @@ async function openPopover() {
   } finally {
     isFetchingMembers.value = false
   }
+}
+
+async function openPopover() {
+  showPopover.value = true
+  await loadMembers()
 }
 
 async function addAssignee(member: OrgMember) {
@@ -311,7 +324,7 @@ async function removeAssignee(login: string) {
   try {
     const nodeId = member?.nodeId
     if (!nodeId) {
-      if (orgMembers.value.length === 0) await openPopover().then(() => { showPopover.value = false })
+      if (orgMembers.value.length === 0) await loadMembers()
       const found = orgMembers.value.find(m => m.login === login)
       if (!found) throw new Error('Could not find user node ID')
       await graphqlMutation(REMOVE_ASSIGNEE_MUTATION, {
@@ -417,52 +430,96 @@ async function submitComment(andClose = false) {
   }
 }
 
-let mentionTimer: ReturnType<typeof setTimeout> | null = null
-let mentionController: AbortController | null = null
+let skipMentionWatch = false
+
+const mentionType = ref<'issue' | 'user' | null>(null)
 
 watch(commentBody, () => {
-  if (mentionTimer) clearTimeout(mentionTimer)
-  if (mentionController) mentionController.abort()
+  if (skipMentionWatch) { skipMentionWatch = false; return }
 
   const textarea = getTextarea()
-  if (!textarea || !props.card.url) return
-
-  const cursor = textarea.selectionStart
+  const cursor = textarea?.selectionStart ?? commentBody.value.length
   const textBefore = commentBody.value.slice(0, cursor)
-  const match = textBefore.match(/#(\w*)$/)
-  if (!match) { mentionResults.value = []; return }
 
-  const q = match[1]
-  mentionIndex.value = 0
+  if (/\s$/.test(textBefore)) { mentionResults.value = []; mentionType.value = null; return }
 
-  mentionController = new AbortController()
-  const controller = mentionController
-  const repoInfo = parseRepoFromUrl(props.card.url)
-  if (!repoInfo) return
+  // @user mentions
+  const userMatch = textBefore.match(/@([\w-]*)$/)
+  if (userMatch) {
+    mentionType.value = 'user'
+    const q = userMatch[1].toLowerCase()
+    mentionIndex.value = 0
+    mentionResults.value = orgMembers.value
+      .filter(m => !q || m.login.toLowerCase().includes(q))
+      .slice(0, 7)
+      .map(m => ({
+        label: m.login,
+        icon: 'i-lucide-user',
+        avatar: m.avatarUrl,
+        insertText: `@${m.login}`,
+      }))
+    if (mentionResults.value.length === 0 && !q) {
+      loadMembers()
+    }
+    return
+  }
 
-  mentionTimer = setTimeout(async () => {
-    try {
-      const url = q
-        ? `search/issues?q=${encodeURIComponent(q)}+repo:${repoInfo.owner}/${repoInfo.repo}&per_page=7`
-        : `repos/${repoInfo.owner}/${repoInfo.repo}/issues?state=open&per_page=7`
-      const data = await rest<any>(url)
-      if (controller.signal.aborted) return
-      const items = q ? (data.items ?? []) : data
-      mentionResults.value = Array.isArray(items) ? items.slice(0, 7) : []
-    } catch { /* aborted or failed */ }
-  }, 150)
+  // #issue references
+  const issueMatch = textBefore.match(/(?:([\w.-]+(?:\/[\w.-]+)?))?#([\w\s-]*)$/)
+  if (issueMatch && issueMatch[2]) {
+    mentionType.value = 'issue'
+    const repoPrefix = issueMatch[1]?.toLowerCase() ?? null
+    const q = issueMatch[2].trim().toLowerCase()
+    mentionIndex.value = 0
+    const currentRepo = repoFromUrl(props.card.url)
+
+    mentionResults.value = props.allCards
+      .filter(c => c.number !== undefined && c.id !== props.card.id)
+      .filter(c => {
+        if (repoPrefix) {
+          const cardRepo = repoFromUrl(c.url)?.toLowerCase()
+          if (!cardRepo?.includes(repoPrefix) && !c.url?.toLowerCase().includes(repoPrefix)) return false
+        }
+        if (!q) return true
+        if (String(c.number).includes(q)) return true
+        return c.title.toLowerCase().includes(q)
+      })
+      .slice(0, 7)
+      .map(c => {
+        const cardRepo = repoFromUrl(c.url)
+        const parsed = c.url ? parseRepoFromUrl(c.url) : null
+        const isCrossRepo = cardRepo && currentRepo && cardRepo !== currentRepo
+        const fullRef = parsed ? `${parsed.owner}/${parsed.repo}` : cardRepo
+        return {
+          label: c.title,
+          sublabel: cardRepo ? `${cardRepo}#${c.number}` : `#${c.number}`,
+          icon: c.typename === 'PullRequest' ? 'i-lucide-git-pull-request' : 'i-lucide-circle-dot',
+          iconClass: 'text-green-400',
+          insertText: isCrossRepo && fullRef ? `${fullRef}#${c.number}` : `#${c.number}`,
+        }
+      })
+    return
+  }
+
+  mentionResults.value = []
+  mentionType.value = null
 })
 
-function insertMention(number: number) {
+function insertMention(text: string) {
   const textarea = getTextarea()
-  if (!textarea) return
-  const cursor = textarea.selectionStart
+  const cursor = textarea?.selectionStart ?? commentBody.value.length
   const before = commentBody.value.slice(0, cursor)
   const after = commentBody.value.slice(cursor)
-  const replaced = before.replace(/#(\w*)$/, `#${number}`)
+  const pattern = mentionType.value === 'user'
+    ? /@[\w-]*$/
+    : /(?:[\w.-]+(?:\/[\w.-]+)?)?#[\w\s-]*$/
+  const replaced = before.replace(pattern, `${text} `)
+  skipMentionWatch = true
+  mentionType.value = null
   commentBody.value = replaced + after
   mentionResults.value = []
   nextTick(() => {
+    if (!textarea) return
     textarea.focus()
     textarea.selectionStart = textarea.selectionEnd = replaced.length
   })
@@ -472,7 +529,7 @@ function onCommentKeyDown(e: KeyboardEvent) {
   if (mentionResults.value.length > 0) {
     if (e.key === 'ArrowDown') { e.preventDefault(); mentionIndex.value = (mentionIndex.value + 1) % mentionResults.value.length; return }
     if (e.key === 'ArrowUp') { e.preventDefault(); mentionIndex.value = (mentionIndex.value - 1 + mentionResults.value.length) % mentionResults.value.length; return }
-    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); insertMention(mentionResults.value[mentionIndex.value].number); return }
+    if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); insertMention(mentionResults.value[mentionIndex.value].insertText); return }
     if (e.key === 'Escape') { mentionResults.value = []; return }
   }
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitComment(false)
@@ -497,7 +554,7 @@ const modKey = import.meta.client && navigator.platform.toLowerCase().includes('
 onMounted(() => {
   const handler = async () => {
     if (!props.card.contentId) return
-    if (orgMembers.value.length === 0) await openPopover().then(() => { showPopover.value = false })
+    if (orgMembers.value.length === 0) await loadMembers()
     const viewerLogin = localStorage.getItem('github_viewer_login')
     if (!viewerLogin) return
     if (localAssignees.value.some(a => a.login === viewerLogin)) return
@@ -844,19 +901,34 @@ watch(showPopover, (open) => {
           <!-- Mention dropdown -->
           <div
             v-if="mentionResults.length > 0"
-            class="absolute bottom-full left-0 right-0 mb-1 bg-elevated border border-muted rounded-md overflow-hidden z-50 shadow-lg"
+            class="absolute bottom-full left-0 right-0 mb-1 bg-elevated border border-default rounded-lg overflow-hidden z-50 shadow-xl"
           >
-            <button
-              v-for="(item, mi) in mentionResults"
-              :key="item.number"
-              class="flex items-center gap-2 w-full px-2.5 py-1.5 bg-transparent border-0 text-highlighted text-xs text-left cursor-pointer"
-              :class="mi === mentionIndex ? 'bg-accented' : 'hover:bg-accented'"
-              @mousedown.prevent="insertMention(item.number)"
-            >
-              <span class="shrink-0 text-dimmed text-[11px] min-w-[36px]">#{{ item.number }}</span>
-              <span class="flex-1 truncate">{{ item.title }}</span>
-              <span class="shrink-0 text-[10px] text-dimmed bg-accented px-1 py-px rounded">{{ item.pull_request ? 'PR' : 'Issue' }}</span>
-            </button>
+            <div class="px-2.5 py-1.5 border-b border-default">
+              <span class="text-[10px] font-semibold text-dimmed uppercase tracking-wider">
+                {{ mentionType === 'user' ? 'Mentions' : 'References' }}
+              </span>
+            </div>
+            <div class="p-1">
+              <button
+                v-for="(item, mi) in mentionResults"
+                :key="item.insertText"
+                class="flex items-center gap-2.5 w-full px-2.5 py-1.5 rounded-md text-left transition-colors"
+                :class="mi === mentionIndex ? 'bg-primary/10 text-primary' : 'text-highlighted hover:bg-elevated/50'"
+                @mousedown.prevent="insertMention(item.insertText)"
+              >
+                <UAvatar v-if="item.avatar" :src="item.avatar" :alt="item.label" size="3xs" />
+                <UIcon
+                  v-else
+                  :name="item.icon"
+                  class="size-4 shrink-0"
+                  :class="mi === mentionIndex ? 'text-primary' : (item.iconClass ?? 'text-muted')"
+                />
+                <div class="flex-1 min-w-0">
+                  <div class="text-sm truncate">{{ item.label }}</div>
+                  <span v-if="item.sublabel" class="text-[11px] text-dimmed">{{ item.sublabel }}</span>
+                </div>
+              </button>
+            </div>
           </div>
         </div>
         <p v-if="commentError" class="text-xs text-error">{{ commentError }}</p>
