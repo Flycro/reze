@@ -1,0 +1,42 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* Dark-friendly scrollbars */
+* {
+  scrollbar-color: var(--ui-border) transparent;
+  scrollbar-width: thin;
+}
+
+/* GitHub rendered HTML content */
+.gh-content {
+  @apply text-[13px] text-toned leading-relaxed;
+}
+.gh-content p { margin: 0 0 12px; }
+.gh-content p:last-child { margin-bottom: 0; }
+.gh-content h1,
+.gh-content h2,
+.gh-content h3 {
+  @apply text-sm font-semibold text-highlighted mt-4 mb-1.5;
+}
+.gh-content code {
+  @apply font-mono text-xs bg-default px-1.5 py-px rounded border border-default;
+}
+.gh-content pre {
+  @apply bg-default border border-default rounded-lg p-3 overflow-x-auto my-2;
+}
+.gh-content pre code {
+  @apply bg-transparent border-0 p-0;
+}
+.gh-content ul,
+.gh-content ol {
+  @apply pl-5 mb-3;
+}
+.gh-content li { @apply my-0.5; }
+.gh-content a { @apply text-primary; }
+.gh-content blockquote {
+  @apply border-l-3 border-accented m-0 pl-3 text-muted;
+}
+.gh-content img { @apply max-w-full rounded; }
+.gh-content hr {
+  @apply border-0 border-t border-default my-4;
+}
