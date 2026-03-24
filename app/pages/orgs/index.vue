@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { VIEWER_QUERY } from '~/utils/queries'
 
+useHead({ title: 'reze - Organizations' })
+
 const { logout } = useAuth()
 const { graphqlCached, restCached } = useGitHub()
 

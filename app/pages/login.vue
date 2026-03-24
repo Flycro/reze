@@ -1,5 +1,6 @@
 <script setup lang="ts">
 definePageMeta({ layout: false })
+useHead({ title: 'reze - Sign in' })
 
 const { login } = useAuth()
 const tokenInput = ref('')

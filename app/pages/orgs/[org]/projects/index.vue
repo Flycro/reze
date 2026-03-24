@@ -3,6 +3,8 @@ import { PROJECT_LIST_QUERY } from '~/utils/queries'
 
 const route = useRoute()
 const org = route.params.org as string
+
+useHead({ title: `reze - ${org}` })
 const { graphqlCached } = useGitHub()
 
 const orgData = ref<{ name: string | null; avatarUrl: string | null } | null>(null)

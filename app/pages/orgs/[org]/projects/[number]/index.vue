@@ -9,6 +9,8 @@ const projectNumber = parseInt(route.params.number as string, 10)
 const { graphql, graphqlMutation } = useGitHub()
 
 const projectTitle = ref('')
+
+useHead({ title: computed(() => projectTitle.value ? `reze - ${projectTitle.value}` : `reze - ${org}`) })
 const projectId = ref('')
 const statusFieldId = ref('')
 const columns = ref<ColumnOption[]>([])
@@ -910,6 +912,16 @@ function onColumnsWheel(e: WheelEvent) {
             </template>
           </button>
 
+          <!-- Team skeleton -->
+          <template v-if="loading && boardAssignees.length === 0 && !collapsed">
+            <USeparator class="my-2" />
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-dimmed px-2 pt-1 pb-1">Team</span>
+            <div v-for="i in 4" :key="i" class="flex items-center gap-2.5 px-2.5 py-1.5">
+              <USkeleton class="size-4 rounded-full" />
+              <USkeleton class="h-3 flex-1 rounded" />
+            </div>
+          </template>
+
           <!-- Team members section -->
           <template v-if="boardAssignees.length > 0">
             <USeparator v-if="!collapsed" class="my-2" />
@@ -955,6 +967,16 @@ function onColumnsWheel(e: WheelEvent) {
               <UIcon :name="showAllTeam ? 'i-lucide-chevron-up' : 'i-lucide-chevron-down'" class="size-3.5" />
               {{ showAllTeam ? 'Show less' : `Show all ${searchedTeam.length}` }}
             </button>
+          </template>
+
+          <!-- Repos skeleton -->
+          <template v-if="loading && boardRepos.length <= 1 && !collapsed">
+            <USeparator class="my-2" />
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-dimmed px-2 pt-1 pb-1">Repos</span>
+            <div v-for="i in 3" :key="i" class="flex items-center gap-2.5 px-2.5 py-1.5">
+              <USkeleton class="size-4 rounded" />
+              <USkeleton class="h-3 flex-1 rounded" />
+            </div>
           </template>
 
           <!-- Repos section -->
@@ -1011,7 +1033,7 @@ function onColumnsWheel(e: WheelEvent) {
             <RezeLogo class="h-4 text-primary" />
           </NuxtLink>
           <div class="flex items-center gap-1.5 text-[10px] text-dimmed">
-            <span>v0.1.0</span>
+            <span>v{{ useRuntimeConfig().public.version }}</span>
             <UButton icon="i-lucide-circle-help" size="2xs" variant="ghost" color="neutral" @click="showShortcuts = true" />
             <a href="https://github.com/flycro/reze" target="_blank" rel="noopener noreferrer" class="hover:text-muted transition-colors">
               <UIcon name="i-lucide-github" class="size-3.5" />

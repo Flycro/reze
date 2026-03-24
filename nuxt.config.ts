@@ -1,5 +1,13 @@
+import pkg from './package.json'
+
 export default defineNuxtConfig({
   modules: ['@nuxt/ui', '@vite-pwa/nuxt', '@nuxt/eslint'],
+
+  runtimeConfig: {
+    public: {
+      version: pkg.version
+    }
+  },
 
   ui: {
     theme: {
