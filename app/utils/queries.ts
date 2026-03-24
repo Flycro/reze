@@ -79,6 +79,7 @@ export const KANBAN_BOARD_QUERY = `
                 url
                 bodyHTML
                 createdAt
+                updatedAt
                 issueState: state
                 author {
                   login
@@ -104,6 +105,7 @@ export const KANBAN_BOARD_QUERY = `
                 url
                 bodyHTML
                 createdAt
+                updatedAt
                 prState: state
               }
               ... on DraftIssue {
@@ -138,13 +140,13 @@ export const ITEMS_PAGE_QUERY = `
             content {
               __typename
               ... on Issue {
-                id title number url bodyHTML createdAt
+                id title number url bodyHTML createdAt updatedAt
                 issueState: state
                 author { login avatarUrl }
                 labels(first: 5) { nodes { name color } }
                 assignees(first: 3) { nodes { login avatarUrl } }
               }
-              ... on PullRequest { id title number url bodyHTML createdAt prState: state }
+              ... on PullRequest { id title number url bodyHTML createdAt updatedAt prState: state }
               ... on DraftIssue { title bodyHTML }
             }
           }

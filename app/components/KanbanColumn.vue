@@ -9,13 +9,19 @@ const props = withDefaults(defineProps<{
   cards: CardData[]
   droppable?: boolean
   selectedCardId?: string | null
+  sortMode?: string
+  hasCustomSort?: boolean
+  sortOptions?: Array<{ label: string; value: string }>
 }>(), {
-  droppable: true
+  droppable: true,
+  sortMode: 'default',
+  hasCustomSort: false,
 })
 
 const emit = defineEmits<{
   select: [card: CardData]
   drop: [cardId: string, columnId: string]
+  sort: [columnId: string, mode: string]
 }>()
 
 const isOver = ref(false)
@@ -73,6 +79,27 @@ function onDrop(e: DragEvent) {
     >
       <span class="w-2.5 h-2.5 rounded-full shrink-0" :style="{ background: accentColor }" />
       <span v-if="!isEmpty" class="text-[13px] font-semibold text-highlighted flex-1">{{ title }}</span>
+      <UPopover v-if="!isEmpty && sortOptions?.length">
+        <UButton
+          icon="i-lucide-arrow-up-down"
+          size="2xs"
+          :color="hasCustomSort ? 'warning' : sortMode !== 'default' ? 'primary' : 'neutral'"
+          :variant="sortMode !== 'default' ? 'soft' : 'ghost'"
+        />
+        <template #content>
+          <div class="p-1 w-[160px]">
+            <button
+              v-for="opt in sortOptions"
+              :key="opt.value"
+              class="flex items-center gap-2 w-full px-2.5 py-1.5 rounded-md text-xs transition-colors"
+              :class="sortMode === opt.value ? 'bg-primary/10 text-primary' : 'text-highlighted hover:bg-elevated/50'"
+              @click="emit('sort', id, opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </template>
+      </UPopover>
       <UBadge v-if="!isEmpty" size="sm" variant="subtle" color="neutral">
         {{ cards.length }}
       </UBadge>

@@ -141,6 +141,69 @@ function toggleUnassigned() {
   })
 }
 
+type SortMode = 'default' | 'updated' | 'created' | 'title'
+const SORT_OPTIONS = [
+  { label: 'GitHub default', value: 'default' },
+  { label: 'Last updated', value: 'updated' },
+  { label: 'Newest first', value: 'created' },
+  { label: 'Title A-Z', value: 'title' },
+]
+
+const SORT_STORAGE_KEY = `reze-sort-${org}-${projectNumber}`
+const sortMode = ref<SortMode>('default')
+const columnSorts = ref<Record<string, SortMode>>({})
+
+onMounted(() => {
+  try {
+    const stored = localStorage.getItem(SORT_STORAGE_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      sortMode.value = parsed.global ?? 'default'
+      columnSorts.value = parsed.columns ?? {}
+    }
+  } catch { /* ignore */ }
+})
+
+function persistSort() {
+  localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({
+    global: sortMode.value,
+    columns: columnSorts.value,
+  }))
+}
+
+watch(sortMode, persistSort)
+watch(columnSorts, persistSort, { deep: true })
+
+function getColumnSort(colId: string): SortMode {
+  return columnSorts.value[colId] ?? sortMode.value
+}
+
+function setColumnSort(colId: string, mode: SortMode) {
+  if (mode === sortMode.value) {
+    const next = { ...columnSorts.value }
+    delete next[colId]
+    columnSorts.value = next
+  } else {
+    columnSorts.value = { ...columnSorts.value, [colId]: mode }
+  }
+}
+
+function applySortToCards(cards: CardData[], mode: SortMode): CardData[] {
+  if (mode === 'default') return cards
+  return [...cards].sort((a, b) => {
+    if (mode === 'updated') return new Date(b.updatedAt ?? 0).getTime() - new Date(a.updatedAt ?? 0).getTime()
+    if (mode === 'created') return new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
+    if (mode === 'title') return a.title.localeCompare(b.title)
+    return 0
+  })
+}
+
+function resetSort() {
+  sortMode.value = 'default'
+  columnSorts.value = {}
+  localStorage.removeItem(SORT_STORAGE_KEY)
+}
+
 function clearFilter() {
   router.replace({ query: {} })
 }
@@ -200,6 +263,7 @@ const searchGroups = computed(() => {
     { id: 'filter-mine', label: 'Show my items', icon: 'i-lucide-user', onSelect: () => viewerLogin.value && toggleUserFilter(viewerLogin.value) },
     { id: 'filter-unassigned', label: 'Show unassigned', icon: 'i-lucide-user-x', onSelect: toggleUnassigned },
     { id: 'filter-clear', label: 'Clear all filters', icon: 'i-lucide-x', kbds: ['X'], onSelect: clearFilter },
+      { id: 'sort-reset', label: 'Reset all sorting', icon: 'i-lucide-rotate-ccw', onSelect: resetSort },
     { id: 'nav-projects', label: 'Back to projects', icon: 'i-lucide-arrow-left', onSelect: () => navigateTo(`/orgs/${org}/projects`) },
   ]
 
@@ -397,6 +461,12 @@ const cardsByColumn = computed(() => {
       map.get('__no_status__')!.push(card)
     }
   }
+  for (const [key, cards] of map) {
+    const mode = getColumnSort(key as string)
+    if (mode !== 'default') {
+      map.set(key, applySortToCards(cards, mode))
+    }
+  }
   return map
 })
 
@@ -433,26 +503,28 @@ function rawItemToCard(item: RawItem): CardData | null {
 
   let title = '', contentId: string | undefined, number: number | undefined
   let url: string | undefined, state: string | undefined, bodyHTML: string | undefined
-  let createdAt: string | undefined
+  let createdAt: string | undefined, updatedAt: string | undefined
   let labels: CardData['labels'] = [], assignees: CardData['assignees'] = []
   let author: CardData['author']
 
   if (content.__typename === 'Issue') {
     contentId = content.id; title = content.title ?? ''; number = content.number; url = content.url
-    state = content.issueState; bodyHTML = content.bodyHTML ?? undefined; createdAt = content.createdAt
+    state = content.issueState; bodyHTML = content.bodyHTML ?? undefined
+    createdAt = content.createdAt; updatedAt = content.updatedAt
     author = content.author ? { login: content.author.login, avatarUrl: content.author.avatarUrl } : undefined
     labels = (content.labels?.nodes ?? []).filter(Boolean).map((l: any) => ({ name: l.name, color: l.color }))
     assignees = (content.assignees?.nodes ?? []).filter(Boolean).map((a: any) => ({ login: a.login, avatarUrl: a.avatarUrl }))
   } else if (content.__typename === 'PullRequest') {
     contentId = content.id; title = content.title ?? ''; number = content.number; url = content.url
-    state = content.prState; bodyHTML = content.bodyHTML ?? undefined; createdAt = content.createdAt
+    state = content.prState; bodyHTML = content.bodyHTML ?? undefined
+    createdAt = content.createdAt; updatedAt = content.updatedAt
   } else if (content.__typename === 'DraftIssue') {
     title = content.title ?? ''; bodyHTML = content.bodyHTML ?? undefined
   } else {
     return null
   }
 
-  return { id: item.id, contentId, title, number, url, state, bodyHTML, createdAt, typename: content.__typename, labels, assignees, author }
+  return { id: item.id, contentId, title, number, url, state, bodyHTML, createdAt, updatedAt, typename: content.__typename, labels, assignees, author }
 }
 
 function processItems(rawItems: RawItem[], sfId: string) {
@@ -817,7 +889,27 @@ function onColumnsWheel(e: WheelEvent) {
       <template #default="{ collapsed }">
         <nav class="flex flex-col gap-1 px-2 py-2 overflow-y-auto">
           <!-- Search button -->
-          <UDashboardSearchButton :collapsed="collapsed" class="mb-2 bg-transparent ring-default" />
+          <UDashboardSearchButton :collapsed="collapsed" class="mb-1 bg-transparent ring-default" />
+
+          <!-- Sort -->
+          <div v-if="!collapsed" class="flex gap-1 mb-2">
+            <USelect
+              v-model="sortMode"
+              :items="SORT_OPTIONS"
+              icon="i-lucide-arrow-up-down"
+              size="xs"
+              class="flex-1"
+            />
+            <UButton
+              v-if="sortMode !== 'default' || Object.keys(columnSorts).length > 0"
+              icon="i-lucide-x"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              :title="Object.keys(columnSorts).length > 0 ? `${modKey}+click to reset all` : 'Reset global sort'"
+              @click="(e: MouseEvent) => (e.metaKey || e.ctrlKey) ? resetSort() : (sortMode = 'default')"
+            />
+          </div>
 
           <!-- Active filters -->
           <div v-if="!collapsed && activeFilterChips.length > 0" class="mx-1 mb-2 rounded-lg bg-elevated/50 border border-default overflow-hidden">
@@ -1096,8 +1188,12 @@ function onColumnsWheel(e: WheelEvent) {
               :cards="noStatusCards"
               :droppable="false"
               :selected-card-id="selectedCard?.id"
+              :sort-mode="getColumnSort('__no_status__')"
+              :has-custom-sort="'__no_status__' in columnSorts"
+              :sort-options="SORT_OPTIONS"
               @select="handleSelect"
               @drop="handleDrop"
+              @sort="setColumnSort"
             />
             <KanbanColumn
               v-for="col in columns"
@@ -1107,8 +1203,12 @@ function onColumnsWheel(e: WheelEvent) {
               :color="col.color"
               :cards="cardsForColumn(col.id)"
               :selected-card-id="selectedCard?.id"
+              :sort-mode="getColumnSort(col.id)"
+              :has-custom-sort="col.id in columnSorts"
+              :sort-options="SORT_OPTIONS"
               @select="handleSelect"
               @drop="handleDrop"
+              @sort="setColumnSort"
             />
           </div>
 

@@ -7,6 +7,7 @@ export interface CardData {
   state?: string
   bodyHTML?: string
   createdAt?: string
+  updatedAt?: string
   typename: string
   labels: Array<{ name: string; color: string }>
   assignees: Array<{ login: string; avatarUrl: string }>
