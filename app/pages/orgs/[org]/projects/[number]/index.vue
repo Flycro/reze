@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { KANBAN_BOARD_QUERY, ITEMS_PAGE_QUERY, MOVE_CARD_MUTATION } from '~/utils/queries'
+import { KANBAN_BOARD_QUERY, ITEMS_PAGE_QUERY, MOVE_CARD_MUTATION, PROJECT_LIST_QUERY } from '~/utils/queries'
 import type { CardData, ColumnOption } from '~/utils/types'
+import { adaptQuery, getOwner, ownerPath } from '~/utils/owner'
 
 const route = useRoute()
 const router = useRouter()
-const org = route.params.org as string
-const projectNumber = parseInt(route.params.number as string, 10)
-const { graphql, graphqlMutation } = useGitHub()
+const { ownerType, ownerLogin } = useOwner()
+const org = ownerLogin.value
+const projectNumber = parseInt((route.params.number as string), 10)
+const { graphql, graphqlCached, graphqlMutation } = useGitHub()
 
 const projectTitle = ref('')
+const appVersion = useRuntimeConfig().public.version as string
 
 useHead({ title: computed(() => projectTitle.value ? `reze - ${projectTitle.value}` : `reze - ${org}`) })
 const projectId = ref('')
@@ -22,6 +25,18 @@ const totalCount = ref(0)
 const loading = ref(true)
 const selectedCard = ref<CardData | null>(null)
 const sidebarOpen = ref(false)
+
+const siblingProjects = ref<Array<{ number: number; title: string }>>([])
+
+onMounted(async () => {
+  try {
+    const data = await graphqlCached<any>(adaptQuery(PROJECT_LIST_QUERY, ownerType.value), { org })
+    const owner = getOwner(data, ownerType.value)
+    siblingProjects.value = (owner?.projectsV2?.nodes ?? [])
+      .filter((p: any) => p && !p.closed)
+      .map((p: any) => ({ number: p.number, title: p.title }))
+  } catch { /* non-critical */ }
+})
 
 const boardRepos = computed(() => {
   const map = new Map<string, number>()
@@ -264,7 +279,7 @@ const searchGroups = computed(() => {
     { id: 'filter-unassigned', label: 'Show unassigned', icon: 'i-lucide-user-x', onSelect: toggleUnassigned },
     { id: 'filter-clear', label: 'Clear all filters', icon: 'i-lucide-x', kbds: ['X'], onSelect: clearFilter },
       { id: 'sort-reset', label: 'Reset all sorting', icon: 'i-lucide-rotate-ccw', onSelect: resetSort },
-    { id: 'nav-projects', label: 'Back to projects', icon: 'i-lucide-arrow-left', onSelect: () => navigateTo(`/orgs/${org}/projects`) },
+    { id: 'nav-projects', label: 'Back to projects', icon: 'i-lucide-arrow-left', onSelect: () => navigateTo(ownerPath(ownerType.value, org)) },
   ]
 
   const teamItems = boardAssignees.value.map(user => ({
@@ -518,6 +533,9 @@ function rawItemToCard(item: RawItem): CardData | null {
     contentId = content.id; title = content.title ?? ''; number = content.number; url = content.url
     state = content.prState; bodyHTML = content.bodyHTML ?? undefined
     createdAt = content.createdAt; updatedAt = content.updatedAt
+    author = content.author ? { login: content.author.login, avatarUrl: content.author.avatarUrl } : undefined
+    labels = (content.labels?.nodes ?? []).filter(Boolean).map((l: any) => ({ name: l.name, color: l.color }))
+    assignees = (content.assignees?.nodes ?? []).filter(Boolean).map((a: any) => ({ login: a.login, avatarUrl: a.avatarUrl }))
   } else if (content.__typename === 'DraftIssue') {
     title = content.title ?? ''; bodyHTML = content.bodyHTML ?? undefined
   } else {
@@ -549,8 +567,8 @@ async function loadBoard() {
   loading.value = true
   isFetchingMore.value = false
   try {
-    const data = await graphql<any>(KANBAN_BOARD_QUERY, { org, number: projectNumber })
-    const project = data.organization?.projectV2
+    const data = await graphql<any>(adaptQuery(KANBAN_BOARD_QUERY, ownerType.value), { org, number: projectNumber })
+    const project = getOwner(data, ownerType.value)?.projectV2
     if (!project) return
 
     projectTitle.value = project.title
@@ -579,8 +597,8 @@ async function loadBoard() {
       const accColMap: Record<string, string | null> = { ...colMap }
 
       while (hasNext && cursor) {
-        const pageData = await graphql<any>(ITEMS_PAGE_QUERY, { org, number: projectNumber, cursor })
-        const page = pageData.organization?.projectV2?.items
+        const pageData = await graphql<any>(adaptQuery(ITEMS_PAGE_QUERY, ownerType.value), { org, number: projectNumber, cursor })
+        const page = getOwner(pageData, ownerType.value)?.projectV2?.items
         if (!page) break
 
         const moreRaw: RawItem[] = (page.nodes ?? []).filter(Boolean)
@@ -691,22 +709,16 @@ onMounted(() => {
     const meta = e.metaKey || e.ctrlKey
     const plain = !meta && !e.altKey
 
+
     // ⌘+A = Assign to me (when card is open)
-    if (meta && e.key === 'a' && selectedCard.value) {
+    if (meta && e.key === 'a' && selectedCard.value && !isInput) {
       window.dispatchEvent(new CustomEvent('reze:assign-me'))
       e.preventDefault()
       return
     }
 
-    // A = Open assignee picker (when card is open, not in input)
-    if (e.key === 'a' && !meta && !e.altKey && !isInput && selectedCard.value) {
-      window.dispatchEvent(new CustomEvent('reze:open-assignees'))
-      e.preventDefault()
-      return
-    }
-
     // ⌘+M = Focus "Move to" select (when card is open)
-    if (meta && e.key === 'm' && selectedCard.value) {
+    if (meta && e.key === 'm' && selectedCard.value && !isInput) {
       const select = document.getElementById('move-to')
       if (select) { select.focus(); select.click() }
       e.preventDefault()
@@ -714,7 +726,7 @@ onMounted(() => {
     }
 
     // ⌘+P = Move to "In Progress" column (when card is open)
-    if (meta && e.key === 'p' && selectedCard.value) {
+    if (meta && e.key === 'p' && selectedCard.value && !isInput) {
       e.preventDefault()
       const progressCol = columns.value.find(c =>
         c.name.toLowerCase().includes('progress') || c.name.toLowerCase().includes('in progress')
@@ -729,6 +741,13 @@ onMounted(() => {
     }
 
     if (isInput) return
+
+    // A = Open assignee picker (when card is open)
+    if (e.key === 'a' && plain && selectedCard.value) {
+      window.dispatchEvent(new CustomEvent('reze:open-assignees'))
+      e.preventDefault()
+      return
+    }
 
     // E = Focus comment textarea (when card is open)
     if (plain && e.key === 'e' && selectedCard.value) {
@@ -863,17 +882,51 @@ function onColumnsWheel(e: WheelEvent) {
     >
       <template #header>
         <div class="flex items-center gap-2 w-full px-3 py-3">
-          <UButton
-            variant="ghost"
-            color="neutral"
-            size="xs"
-            icon="i-lucide-arrow-left"
-            @click="navigateTo(`/orgs/${org}/projects`)"
-          />
-          <div class="flex-1 min-w-0">
-            <h1 class="text-sm font-semibold text-highlighted truncate">{{ projectTitle || org }}</h1>
-            <p class="text-xs text-dimmed truncate">{{ org }}</p>
-          </div>
+          <UPopover :ui="{ content: 'w-[260px] p-0' }">
+            <button class="flex items-center gap-2 min-w-0 flex-1 text-left group">
+              <UIcon name="i-lucide-kanban" class="size-4 text-primary shrink-0" />
+              <div class="flex-1 min-w-0">
+                <div class="text-sm font-semibold text-highlighted truncate group-hover:text-primary transition-colors">{{ projectTitle || org }}</div>
+                <div class="text-[11px] text-dimmed truncate">{{ org }}</div>
+              </div>
+              <UIcon name="i-lucide-chevrons-up-down" class="size-3.5 text-dimmed shrink-0" />
+            </button>
+
+            <template #content>
+              <div class="flex flex-col">
+                <div v-if="siblingProjects.length > 0" class="max-h-[240px] overflow-y-auto p-1">
+                  <NuxtLink
+                    v-for="p in siblingProjects"
+                    :key="p.number"
+                    :to="`${ownerPath(ownerType.value, org)}/${p.number}`"
+                    class="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-sm no-underline transition-colors"
+                    :class="p.number === projectNumber ? 'bg-primary/10 text-primary' : 'text-highlighted hover:bg-elevated/50'"
+                  >
+                    <UIcon name="i-lucide-kanban" class="size-4 shrink-0" />
+                    <span class="flex-1 truncate">{{ p.title }}</span>
+                    <UIcon v-if="p.number === projectNumber" name="i-lucide-check" class="size-3.5 shrink-0" />
+                  </NuxtLink>
+                </div>
+                <div class="border-t border-default p-1">
+                  <NuxtLink
+                    :to="ownerPath(ownerType.value, org)"
+                    class="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-sm text-muted no-underline hover:bg-elevated/50 transition-colors"
+                  >
+                    <UIcon name="i-lucide-arrow-left" class="size-4" />
+                    All projects
+                  </NuxtLink>
+                  <NuxtLink
+                    to="/orgs"
+                    class="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-sm text-muted no-underline hover:bg-elevated/50 transition-colors"
+                  >
+                    <UIcon name="i-lucide-building-2" class="size-4" />
+                    Switch organization
+                  </NuxtLink>
+                </div>
+              </div>
+            </template>
+          </UPopover>
+
           <UButton
             icon="i-lucide-plus"
             color="primary"
@@ -1125,7 +1178,7 @@ function onColumnsWheel(e: WheelEvent) {
             <RezeLogo class="h-4 text-primary" />
           </NuxtLink>
           <div class="flex items-center gap-1.5 text-[10px] text-dimmed">
-            <span>v{{ useRuntimeConfig().public.version }}</span>
+            <span>v{{ appVersion }}</span>
             <UButton icon="i-lucide-circle-help" size="2xs" variant="ghost" color="neutral" @click="showShortcuts = true" />
             <a href="https://github.com/flycro/reze" target="_blank" rel="noopener noreferrer" class="hover:text-muted transition-colors">
               <UIcon name="i-lucide-github" class="size-3.5" />
@@ -1219,6 +1272,7 @@ function onColumnsWheel(e: WheelEvent) {
             :current-column-id="currentColumnId"
             :org="org"
             :assignee-counts="assigneeCounts"
+            :all-cards="allCards"
             @close="closeSidebar"
             @move="handleMove"
             @assignees-changed="handleAssigneesChanged"
