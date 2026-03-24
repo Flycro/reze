@@ -121,7 +121,43 @@ function selectOrg(org: Org) {
           <p class="text-muted">No organizations matching "{{ search }}"</p>
         </div>
 
+        <div v-else-if="filteredOrgs.length === 0 && !loading" class="text-center py-16">
+          <UIcon name="i-lucide-building-2" class="size-12 text-dimmed mx-auto mb-3" />
+          <p class="text-lg font-medium text-muted">No organizations found</p>
+          <p v-if="viewer" class="text-sm text-dimmed mt-1">You can still access your personal projects below</p>
+          <UCard
+            v-if="viewer"
+            variant="subtle"
+            class="cursor-pointer transition-all hover:ring-primary max-w-xs mx-auto mt-6"
+            @click="navigateTo(`/users/${viewer.login}/projects`)"
+          >
+            <div class="flex items-center gap-3">
+              <UAvatar :src="viewer.avatarUrl" :alt="viewer.login" size="lg" :ui="{ rounded: 'rounded-lg' }" />
+              <div class="flex-1 min-w-0 text-left">
+                <div class="font-semibold text-highlighted">{{ viewer.login }}</div>
+                <div class="text-xs text-muted">Personal projects</div>
+              </div>
+              <UIcon name="i-lucide-chevron-right" class="size-4 text-dimmed shrink-0" />
+            </div>
+          </UCard>
+        </div>
+
         <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <UCard
+            v-if="viewer && !search"
+            variant="subtle"
+            class="cursor-pointer transition-all hover:ring-primary"
+            @click="navigateTo(`/users/${viewer.login}/projects`)"
+          >
+            <div class="flex items-center gap-3">
+              <UAvatar :src="viewer.avatarUrl" :alt="viewer.login" size="lg" :ui="{ rounded: 'rounded-lg' }" />
+              <div class="flex-1 min-w-0">
+                <div class="font-semibold text-highlighted truncate">{{ viewer.login }}</div>
+                <div class="text-xs text-muted mt-0.5">Personal projects</div>
+              </div>
+              <UIcon name="i-lucide-chevron-right" class="size-4 text-dimmed shrink-0" />
+            </div>
+          </UCard>
           <UCard
             v-for="org in filteredOrgs"
             :key="org.login"

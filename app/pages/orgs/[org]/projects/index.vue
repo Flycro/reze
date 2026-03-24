@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { PROJECT_LIST_QUERY } from '~/utils/queries'
+import { adaptQuery, getOwner, ownerPath } from '~/utils/owner'
 
-const route = useRoute()
-const org = route.params.org as string
+const { ownerType, ownerLogin: org } = useOwner()
 
-useHead({ title: `reze - ${org}` })
+useHead({ title: `reze - ${org.value}` })
 const { graphqlCached } = useGitHub()
 
 const orgData = ref<{ name: string | null; avatarUrl: string | null } | null>(null)
@@ -21,32 +21,18 @@ const lastProject = ref<string | null>(null)
 const loading = ref(true)
 
 onMounted(async () => {
-  lastProject.value = localStorage.getItem(`last_project_${org}`)
+  lastProject.value = localStorage.getItem(`last_project_${org.value}`)
 
   try {
-    const data = await graphqlCached<{
-      organization: {
-        name: string | null
-        avatarUrl: string | null
-        projectsV2: {
-          nodes: Array<{
-            id: string
-            number: number
-            title: string
-            shortDescription: string | null
-            closed: boolean
-            updatedAt: string
-            items: { totalCount: number }
-          } | null>
-        }
-      }
-    }>(PROJECT_LIST_QUERY, { org })
+    const query = adaptQuery(PROJECT_LIST_QUERY, ownerType.value)
+    const data = await graphqlCached<any>(query, { org: org.value })
+    const owner = getOwner(data, ownerType.value)
 
-    orgData.value = { name: data.organization.name, avatarUrl: data.organization.avatarUrl }
+    orgData.value = { name: owner?.name ?? null, avatarUrl: owner?.avatarUrl ?? null }
 
-    projects.value = (data.organization.projectsV2.nodes ?? [])
-      .filter((p): p is NonNullable<typeof p> => !!p && !p.closed)
-      .sort((a, b) => {
+    projects.value = (owner?.projectsV2?.nodes ?? [])
+      .filter((p: any): p is NonNullable<typeof p> => !!p && !p.closed)
+      .sort((a: any, b: any) => {
         if (String(a.number) === lastProject.value) return -1
         if (String(b.number) === lastProject.value) return 1
         return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
@@ -56,16 +42,17 @@ onMounted(async () => {
   }
 })
 
+const basePath = computed(() => ownerPath(ownerType.value, org.value))
+
 function selectProject(project: typeof projects.value[0]) {
-  localStorage.setItem(`last_project_${org}`, String(project.number))
+  localStorage.setItem(`last_project_${org.value}`, String(project.number))
   lastProject.value = String(project.number)
-  navigateTo(`/orgs/${org}/projects/${project.number}`)
+  navigateTo(`${basePath.value}/${project.number}`)
 }
 </script>
 
 <template>
   <div class="min-h-screen flex flex-col">
-    <!-- Header -->
     <header class="border-b border-default shrink-0">
       <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
         <div class="flex items-center gap-3">
@@ -83,12 +70,16 @@ function selectProject(project: typeof projects.value[0]) {
       </div>
     </header>
 
-    <!-- Content -->
     <main class="flex-1">
       <div class="max-w-5xl mx-auto px-4 sm:px-6 py-8">
-        <div class="mb-6">
-          <h2 class="text-2xl font-bold text-highlighted">Projects</h2>
-          <p class="text-sm text-muted mt-1">Select a project board to start triaging</p>
+        <div class="flex items-center justify-between mb-6">
+          <div>
+            <h2 class="text-2xl font-bold text-highlighted">Projects</h2>
+            <p class="text-sm text-muted mt-1">Select a project board to start triaging</p>
+          </div>
+          <UButton variant="ghost" color="neutral" size="sm" icon="i-lucide-arrow-left" @click="navigateTo('/orgs')">
+            All organizations
+          </UButton>
         </div>
 
         <div v-if="loading" class="flex items-center justify-center py-16">
@@ -98,7 +89,7 @@ function selectProject(project: typeof projects.value[0]) {
         <div v-else-if="projects.length === 0" class="text-center py-16">
           <UIcon name="i-lucide-kanban" class="size-12 text-dimmed mx-auto mb-3" />
           <p class="text-lg font-medium text-muted">No open projects</p>
-          <p class="text-sm text-dimmed mt-1">This organization has no active GitHub Projects</p>
+          <p class="text-sm text-dimmed mt-1">No active GitHub Projects found</p>
         </div>
 
         <div v-else class="flex flex-col gap-2">
