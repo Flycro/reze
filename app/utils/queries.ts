@@ -107,6 +107,22 @@ export const KANBAN_BOARD_QUERY = `
                 createdAt
                 updatedAt
                 prState: state
+                author {
+                  login
+                  avatarUrl
+                }
+                labels(first: 5) {
+                  nodes {
+                    name
+                    color
+                  }
+                }
+                assignees(first: 3) {
+                  nodes {
+                    login
+                    avatarUrl
+                  }
+                }
               }
               ... on DraftIssue {
                 title
@@ -146,7 +162,13 @@ export const ITEMS_PAGE_QUERY = `
                 labels(first: 5) { nodes { name color } }
                 assignees(first: 3) { nodes { login avatarUrl } }
               }
-              ... on PullRequest { id title number url bodyHTML createdAt updatedAt prState: state }
+              ... on PullRequest {
+                id title number url bodyHTML createdAt updatedAt
+                prState: state
+                author { login avatarUrl }
+                labels(first: 5) { nodes { name color } }
+                assignees(first: 3) { nodes { login avatarUrl } }
+              }
               ... on DraftIssue { title bodyHTML }
             }
           }
