@@ -12,6 +12,8 @@ export interface CardData {
   labels: Array<{ name: string; color: string }>
   assignees: Array<{ login: string; avatarUrl: string }>
   author?: { login: string; avatarUrl: string }
+  subIssuesSummary?: { total: number; completed: number; percentCompleted: number }
+  parent?: { id: string; title: string; number: number; url: string }
 }
 
 export interface ColumnOption {

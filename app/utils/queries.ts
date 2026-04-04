@@ -30,7 +30,7 @@ export const PROJECT_LIST_QUERY = `
 `
 
 export const KANBAN_BOARD_QUERY = `
-  query($org: String!, $number: Int!) {
+  query($org: String!, $number: Int!, $query: String) {
     organization(login: $org) {
       projectV2(number: $number) {
         id
@@ -49,7 +49,7 @@ export const KANBAN_BOARD_QUERY = `
             }
           }
         }
-        items(first: 100) {
+        items(first: 100, query: $query) {
           totalCount
           pageInfo {
             endCursor
@@ -77,7 +77,6 @@ export const KANBAN_BOARD_QUERY = `
                 title
                 number
                 url
-                bodyHTML
                 createdAt
                 updatedAt
                 issueState: state
@@ -97,13 +96,23 @@ export const KANBAN_BOARD_QUERY = `
                     avatarUrl
                   }
                 }
+                subIssuesSummary {
+                  total
+                  completed
+                  percentCompleted
+                }
+                parent {
+                  id
+                  title
+                  number
+                  url
+                }
               }
               ... on PullRequest {
                 id
                 title
                 number
                 url
-                bodyHTML
                 createdAt
                 updatedAt
                 prState: state
@@ -126,7 +135,6 @@ export const KANBAN_BOARD_QUERY = `
               }
               ... on DraftIssue {
                 title
-                bodyHTML
               }
             }
           }
@@ -137,10 +145,10 @@ export const KANBAN_BOARD_QUERY = `
 `
 
 export const ITEMS_PAGE_QUERY = `
-  query($org: String!, $number: Int!, $cursor: String!) {
+  query($org: String!, $number: Int!, $cursor: String!, $query: String) {
     organization(login: $org) {
       projectV2(number: $number) {
-        items(first: 100, after: $cursor) {
+        items(first: 100, after: $cursor, query: $query) {
           pageInfo { endCursor hasNextPage }
           nodes {
             id
@@ -156,20 +164,22 @@ export const ITEMS_PAGE_QUERY = `
             content {
               __typename
               ... on Issue {
-                id title number url bodyHTML createdAt updatedAt
+                id title number url createdAt updatedAt
                 issueState: state
                 author { login avatarUrl }
                 labels(first: 5) { nodes { name color } }
                 assignees(first: 3) { nodes { login avatarUrl } }
+                subIssuesSummary { total completed percentCompleted }
+                parent { id title number url }
               }
               ... on PullRequest {
-                id title number url bodyHTML createdAt updatedAt
+                id title number url createdAt updatedAt
                 prState: state
                 author { login avatarUrl }
                 labels(first: 5) { nodes { name color } }
                 assignees(first: 3) { nodes { login avatarUrl } }
               }
-              ... on DraftIssue { title bodyHTML }
+              ... on DraftIssue { title }
             }
           }
         }
@@ -322,6 +332,39 @@ export const REMOVE_ASSIGNEE_MUTATION = `
           }
         }
       }
+    }
+  }
+`
+
+export const SUB_ISSUES_QUERY = `
+  query($id: ID!) {
+    node(id: $id) {
+      ... on Issue {
+        subIssues(first: 50) {
+          nodes {
+            id
+            title
+            number
+            url
+            state
+          }
+        }
+        subIssuesSummary {
+          total
+          completed
+          percentCompleted
+        }
+      }
+    }
+  }
+`
+
+export const ITEM_BODY_QUERY = `
+  query($id: ID!) {
+    node(id: $id) {
+      ... on Issue { bodyHTML }
+      ... on PullRequest { bodyHTML }
+      ... on DraftIssue { bodyHTML: body }
     }
   }
 `

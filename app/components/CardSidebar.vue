@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { CardData, ColumnOption, OrgMember } from '~/utils/types'
-import { ADD_COMMENT_MUTATION, ADD_ASSIGNEE_MUTATION, REMOVE_ASSIGNEE_MUTATION, CLOSE_ISSUE_MUTATION, CLOSE_PR_MUTATION, REOPEN_ISSUE_MUTATION, REOPEN_PR_MUTATION } from '~/utils/queries'
+import { ADD_COMMENT_MUTATION, ADD_ASSIGNEE_MUTATION, REMOVE_ASSIGNEE_MUTATION, CLOSE_ISSUE_MUTATION, CLOSE_PR_MUTATION, REOPEN_ISSUE_MUTATION, REOPEN_PR_MUTATION, SUB_ISSUES_QUERY, ITEM_BODY_QUERY } from '~/utils/queries'
 
 const props = defineProps<{
   card: CardData
@@ -15,9 +15,42 @@ const emit = defineEmits<{
   close: []
   move: [itemId: string, toColumnId: string]
   assigneesChanged: [cardId: string, assignees: CardData['assignees']]
+  selectCard: [card: CardData]
 }>()
 
-const { graphqlMutation, rest, restCached } = useGitHub()
+function onSubIssueClick(e: MouseEvent, sub: SubIssue) {
+  if (e.metaKey || e.ctrlKey) return
+  const boardCard = props.allCards.find(c => c.contentId === sub.id)
+  if (boardCard) {
+    e.preventDefault()
+    emit('selectCard', boardCard)
+  }
+}
+
+function onParentClick(e: MouseEvent) {
+  if (e.metaKey || e.ctrlKey || !props.card.parent) return
+  const boardCard = props.allCards.find(c => c.contentId === props.card.parent!.id)
+  if (boardCard) {
+    e.preventDefault()
+    emit('selectCard', boardCard)
+  }
+}
+
+const { graphqlMutation, graphqlCached, rest, restCached } = useGitHub()
+
+const bodyHTML = ref<string | null>(null)
+const bodyLoading = ref(false)
+
+watch(() => props.card.contentId, async (id) => {
+  bodyHTML.value = props.card.bodyHTML ?? null
+  if (bodyHTML.value || !id) return
+  bodyLoading.value = true
+  try {
+    const data = await graphqlCached<any>(ITEM_BODY_QUERY, { id })
+    bodyHTML.value = data.node?.bodyHTML ?? null
+  } catch {}
+  finally { bodyLoading.value = false }
+}, { immediate: true })
 
 const sidebarEl = ref<HTMLElement | null>(null)
 const LG_BREAKPOINT = 1024
@@ -160,6 +193,23 @@ const bodyScrolled = ref(false)
 const timelineEvents = ref<DisplayEvent[]>([])
 const timelineLoading = ref(false)
 const isClosing = ref(false)
+
+interface SubIssue {
+  id: string
+  title: string
+  number: number
+  url: string
+  state: string
+}
+interface SubIssuesSummary {
+  total: number
+  completed: number
+  percentCompleted: number
+}
+const subIssues = ref<SubIssue[]>([])
+const subIssuesSummary = ref<SubIssuesSummary | null>(null)
+const subIssuesLoading = ref(false)
+
 interface MentionResult {
   label: string
   sublabel?: string
@@ -257,10 +307,29 @@ async function loadTimeline() {
     }
   } catch (e: any) {
     if (e.name === 'AbortError') return
-    // Silently fail — timeline is non-critical
     console.warn('Failed to load timeline:', e.message)
   } finally {
     if (!signal.aborted) timelineLoading.value = false
+  }
+}
+
+async function loadSubIssues() {
+  if (!props.card.contentId || props.card.typename !== 'Issue') {
+    subIssues.value = []
+    subIssuesSummary.value = null
+    return
+  }
+  subIssuesLoading.value = true
+  try {
+    const data = await graphqlCached(SUB_ISSUES_QUERY, { id: props.card.contentId }, { ttl: 60_000 })
+    const node = data?.node
+    subIssues.value = node?.subIssues?.nodes ?? []
+    subIssuesSummary.value = node?.subIssuesSummary?.total > 0 ? node.subIssuesSummary : null
+  } catch {
+    subIssues.value = []
+    subIssuesSummary.value = null
+  } finally {
+    subIssuesLoading.value = false
   }
 }
 
@@ -275,6 +344,7 @@ watch(() => props.card, () => {
   optimisticComment.value = null
   mentionResults.value = []
   loadTimeline()
+  loadSubIssues()
 }, { immediate: true })
 
 async function loadMembers() {
@@ -381,22 +451,25 @@ async function pollForComment(commentedCountBefore: number) {
   const repoInfo = parseRepoFromUrl(props.card.url)
   if (!repoInfo) return
 
+  let lastFiltered: RawTimelineEvent[] = []
   for (let i = 0; i < 5; i++) {
     await new Promise(r => setTimeout(r, 2000))
     try {
       const data = await rest<RawTimelineEvent[]>(
         `repos/${repoInfo.owner}/${repoInfo.repo}/issues/${repoInfo.number}/timeline?per_page=100`
       )
-      if (!Array.isArray(data)) break
+      if (!Array.isArray(data)) continue
       const filtered = data.filter(e => RELEVANT_EVENTS.has(e.event))
+      lastFiltered = filtered
       const commentedCount = filtered.filter(e => e.event === 'commented').length
       if (commentedCount > commentedCountBefore) {
         timelineEvents.value = processTimelineEvents(filtered)
         optimisticComment.value = null
         return
       }
-    } catch { break }
+    } catch { continue }
   }
+  if (lastFiltered.length > 0) timelineEvents.value = processTimelineEvents(lastFiltered)
   optimisticComment.value = null
 }
 
@@ -443,7 +516,6 @@ watch(commentBody, () => {
 
   if (/\s$/.test(textBefore)) { mentionResults.value = []; mentionType.value = null; return }
 
-  // @user mentions
   const userMatch = textBefore.match(/@([\w-]*)$/)
   if (userMatch) {
     mentionType.value = 'user'
@@ -464,7 +536,6 @@ watch(commentBody, () => {
     return
   }
 
-  // #issue references
   const issueMatch = textBefore.match(/(?:([\w.-]+(?:\/[\w.-]+)?))?#([\w\s-]*)$/)
   if (issueMatch && issueMatch[2]) {
     mentionType.value = 'issue'
@@ -650,6 +721,20 @@ watch(showPopover, (open) => {
 
     <!-- Body -->
     <div ref="bodyRef" class="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-5">
+      <!-- Parent issue -->
+      <a
+        v-if="card.parent"
+        :href="card.parent.url"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center gap-1.5 text-xs text-muted no-underline hover:underline"
+        @click="(e: MouseEvent) => onParentClick(e)"
+      >
+        <UIcon name="i-lucide-arrow-up-right" class="size-3.5 shrink-0" />
+        <span class="truncate">{{ card.parent.title }}</span>
+        <span class="text-dimmed shrink-0">#{{ card.parent.number }}</span>
+      </a>
+
       <!-- Title -->
       <h2 class="text-base font-semibold text-highlighted leading-snug">
         <a v-if="card.url" :href="card.url" target="_blank" rel="noreferrer" class="text-highlighted hover:text-primary no-underline">
@@ -755,11 +840,57 @@ watch(showPopover, (open) => {
       </div>
 
       <!-- Description -->
-      <div v-if="card.bodyHTML" class="flex flex-col gap-2">
+      <div v-if="bodyLoading" class="flex flex-col gap-2">
         <span class="text-[11px] font-semibold uppercase tracking-wider text-dimmed">Description</span>
-        <div v-external-links class="gh-content" v-html="card.bodyHTML" />
+        <USkeleton class="h-4 w-3/4 rounded" />
+        <USkeleton class="h-4 w-1/2 rounded" />
+      </div>
+      <div v-else-if="bodyHTML" class="flex flex-col gap-2">
+        <span class="text-[11px] font-semibold uppercase tracking-wider text-dimmed">Description</span>
+        <div v-external-links class="gh-content" v-html="bodyHTML" />
       </div>
       <p v-else class="text-[13px] text-dimmed">No description.</p>
+
+      <!-- Sub-issues -->
+      <div v-if="subIssuesLoading || subIssues.length > 0" class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold uppercase tracking-wider text-dimmed">Sub-issues</span>
+          <span v-if="subIssuesSummary" class="text-[11px] text-dimmed">
+            {{ subIssuesSummary.completed }}/{{ subIssuesSummary.total }}
+          </span>
+        </div>
+        <span v-if="subIssuesLoading && subIssues.length === 0" class="text-[13px] text-dimmed">Loading…</span>
+        <template v-else>
+          <div v-if="subIssuesSummary" class="w-full h-1.5 rounded-full bg-elevated overflow-hidden">
+            <div
+              class="h-full rounded-full bg-primary transition-all"
+              :style="{ width: `${subIssuesSummary.percentCompleted}%` }"
+            />
+          </div>
+          <div class="flex flex-col gap-1">
+            <a
+              v-for="sub in subIssues"
+              :key="sub.id"
+              :href="sub.url"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="flex items-center gap-1.5 text-[13px] no-underline hover:underline py-0.5 group"
+              @click="(e: MouseEvent) => onSubIssueClick(e, sub)"
+            >
+              <UIcon
+                :name="sub.state === 'OPEN' ? 'i-lucide-circle-dot' : 'i-lucide-check-circle-2'"
+                class="size-3.5 shrink-0"
+                :class="sub.state === 'OPEN' ? 'text-success' : 'text-muted'"
+              />
+              <span
+                class="flex-1 min-w-0 truncate"
+                :class="sub.state === 'OPEN' ? 'text-highlighted' : 'text-muted line-through'"
+              >{{ sub.title }}</span>
+              <span class="text-[11px] text-dimmed shrink-0">#{{ sub.number }}</span>
+            </a>
+          </div>
+        </template>
+      </div>
 
       <!-- Activity / Timeline -->
       <div v-if="timelineLoading || timelineEvents.length > 0 || optimisticComment" class="flex flex-col gap-2">

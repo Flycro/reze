@@ -32,6 +32,11 @@ function stateClass(state: string) {
     @click="emit('select', card)"
     @dblclick="card.url && window.open(card.url, '_blank')"
   >
+    <div v-if="card.parent" class="flex items-center gap-1 text-[11px] text-dimmed truncate min-w-0">
+      <UIcon name="i-lucide-arrow-up-right" class="size-3 shrink-0" />
+      <span class="truncate">{{ card.parent.title }}</span>
+    </div>
+
     <div class="flex items-start gap-2">
       <div class="flex-1 text-[13px] text-highlighted leading-snug break-words min-w-0">
         {{ card.title }}
@@ -46,6 +51,16 @@ function stateClass(state: string) {
           class="-ml-1.5 first:ml-0 ring-2 ring-default"
         />
       </div>
+    </div>
+
+    <div v-if="card.subIssuesSummary" class="flex items-center gap-2">
+      <div class="flex-1 h-1 rounded-full bg-default overflow-hidden">
+        <div
+          class="h-full rounded-full bg-primary transition-all"
+          :style="{ width: `${card.subIssuesSummary.percentCompleted}%` }"
+        />
+      </div>
+      <span class="text-[10px] text-dimmed whitespace-nowrap">{{ card.subIssuesSummary.completed }}/{{ card.subIssuesSummary.total }}</span>
     </div>
 
     <div
