@@ -21,6 +21,9 @@ const allCards = shallowRef<CardData[]>([])
 const itemColumnMap = shallowRef<Record<string, string | null>>({})
 const pending = shallowRef<Record<string, string>>({})
 const isFetchingMore = ref(false)
+const isRefreshing = ref(false)
+const backgroundLoading = computed(() => isFetchingMore.value || isRefreshing.value)
+const fetchedCount = ref(0)
 const totalCount = ref(0)
 const loading = ref(true)
 const selectedCard = ref<CardData | null>(null)
@@ -35,7 +38,7 @@ onMounted(async () => {
     siblingProjects.value = (owner?.projectsV2?.nodes ?? [])
       .filter((p: any) => p && !p.closed)
       .map((p: any) => ({ number: p.number, title: p.title }))
-  } catch { /* non-critical */ }
+  } catch {}
 })
 
 const boardRepos = computed(() => {
@@ -64,10 +67,53 @@ const excludeUsers = computed(() => parseList(route.query.xUsers))
 const excludeRepos = computed(() => parseList(route.query.xRepos))
 const filterUnassigned = computed(() => route.query.unassigned === '1')
 
+const STATE_FILTER_OPTIONS = [
+  { label: 'All', value: 'all' },
+  { label: 'Open', value: 'open' },
+  { label: 'Closed', value: 'closed' },
+]
+
+const stateFilter = computed({
+  get: () => (route.query.state as string) || 'all',
+  set: (v: string) => setQuery({ state: v === 'all' ? undefined : v }),
+})
+
+const DATE_FILTER_OPTIONS = [
+  { label: 'Last 7 days', value: '7d' },
+  { label: 'Last 30 days', value: '30d' },
+  { label: 'Last 90 days', value: '90d' },
+  { label: 'Last year', value: '1y' },
+  { label: 'All time', value: 'all' },
+]
+
+const dateFilter = computed({
+  get: () => (route.query.since as string) || 'all',
+  set: (v: string) => setQuery({ since: v === 'all' ? undefined : v }),
+})
+
+function dateDays(): number | null {
+  const v = dateFilter.value
+  if (v === 'all') return null
+  return v === '7d' ? 7 : v === '30d' ? 30 : v === '90d' ? 90 : 365
+}
+
+function dateCutoff(): number | null {
+  const days = dateDays()
+  if (!days) return null
+  return Date.now() - days * 86400000
+}
+
+function itemsQueryString(): string | undefined {
+  const days = dateDays()
+  if (!days) return undefined
+  const d = new Date(Date.now() - days * 86400000)
+  return `updated:>=${d.toISOString().slice(0, 10)}`
+}
+
 const hasAnyFilter = computed(() =>
   filterUsers.value.length > 0 || filterRepos.value.length > 0 ||
   excludeUsers.value.length > 0 || excludeRepos.value.length > 0 ||
-  filterUnassigned.value
+  filterUnassigned.value || dateFilter.value !== 'all' || stateFilter.value !== 'all'
 )
 
 function setQuery(updates: Record<string, string[] | string | undefined>) {
@@ -176,7 +222,7 @@ onMounted(() => {
       sortMode.value = parsed.global ?? 'default'
       columnSorts.value = parsed.columns ?? {}
     }
-  } catch { /* ignore */ }
+  } catch {}
 })
 
 function persistSort() {
@@ -392,8 +438,17 @@ const unassignedCount = computed(() =>
   allCards.value.filter(c => c.assignees.length === 0).length
 )
 
+
 const filteredCards = computed(() => {
   let cards = allCards.value
+
+  const cutoff = dateCutoff()
+  if (cutoff) {
+    cards = cards.filter(c => {
+      const t = c.updatedAt ? new Date(c.updatedAt).getTime() : c.createdAt ? new Date(c.createdAt).getTime() : 0
+      return t >= cutoff
+    })
+  }
 
   if (filterRepos.value.length > 0) {
     const repos = new Set(filterRepos.value)
@@ -415,6 +470,11 @@ const filteredCards = computed(() => {
   if (excludeUsers.value.length > 0) {
     const logins = new Set(excludeUsers.value)
     cards = cards.filter(c => !c.assignees.some(a => logins.has(a.login)))
+  }
+
+  if (stateFilter.value !== 'all') {
+    const s = stateFilter.value.toUpperCase()
+    cards = cards.filter(c => c.state?.toUpperCase() === s || (s === 'CLOSED' && c.state?.toUpperCase() === 'MERGED'))
   }
 
   return cards
@@ -459,6 +519,17 @@ const activeFilterChips = computed(() => {
       setQuery({ xRepos: excludeRepos.value.filter(r => r !== repo) || undefined })
     }})
   }
+  if (stateFilter.value !== 'all') {
+    chips.push({ label: stateFilter.value === 'open' ? 'Open only' : 'Closed only', icon: 'i-lucide-circle-dot', type: 'include', category: 'status', remove: () => {
+      stateFilter.value = 'all'
+    }})
+  }
+  if (dateFilter.value !== 'all') {
+    const opt = DATE_FILTER_OPTIONS.find(o => o.value === dateFilter.value)
+    chips.push({ label: opt?.label ?? dateFilter.value, icon: 'i-lucide-calendar', type: 'include', category: 'status', remove: () => {
+      dateFilter.value = 'all'
+    }})
+  }
   return chips
 })
 
@@ -491,6 +562,7 @@ function cardsForColumn(colId: string) {
   return cardsByColumn.value.get(colId) ?? []
 }
 
+
 const currentColumnId = computed(() => {
   if (!selectedCard.value) return null
   return pending.value[selectedCard.value.id] ?? itemColumnMap.value[selectedCard.value.id] ?? null
@@ -522,6 +594,9 @@ function rawItemToCard(item: RawItem): CardData | null {
   let labels: CardData['labels'] = [], assignees: CardData['assignees'] = []
   let author: CardData['author']
 
+  let subIssuesSummary: CardData['subIssuesSummary']
+  let parent: CardData['parent']
+
   if (content.__typename === 'Issue') {
     contentId = content.id; title = content.title ?? ''; number = content.number; url = content.url
     state = content.issueState; bodyHTML = content.bodyHTML ?? undefined
@@ -529,6 +604,8 @@ function rawItemToCard(item: RawItem): CardData | null {
     author = content.author ? { login: content.author.login, avatarUrl: content.author.avatarUrl } : undefined
     labels = (content.labels?.nodes ?? []).filter(Boolean).map((l: any) => ({ name: l.name, color: l.color }))
     assignees = (content.assignees?.nodes ?? []).filter(Boolean).map((a: any) => ({ login: a.login, avatarUrl: a.avatarUrl }))
+    if (content.subIssuesSummary?.total > 0) subIssuesSummary = content.subIssuesSummary
+    if (content.parent) parent = content.parent
   } else if (content.__typename === 'PullRequest') {
     contentId = content.id; title = content.title ?? ''; number = content.number; url = content.url
     state = content.prState; bodyHTML = content.bodyHTML ?? undefined
@@ -542,7 +619,7 @@ function rawItemToCard(item: RawItem): CardData | null {
     return null
   }
 
-  return { id: item.id, contentId, title, number, url, state, bodyHTML, createdAt, updatedAt, typename: content.__typename, labels, assignees, author }
+  return { id: item.id, contentId, title, number, url, state, bodyHTML, createdAt, updatedAt, typename: content.__typename, labels, assignees, author, subIssuesSummary, parent }
 }
 
 function processItems(rawItems: RawItem[], sfId: string) {
@@ -563,11 +640,83 @@ function processItems(rawItems: RawItem[], sfId: string) {
   return { cards, colMap }
 }
 
-async function loadBoard() {
-  loading.value = true
-  isFetchingMore.value = false
+const BOARD_CACHE_KEY = `reze-board-${org}-${projectNumber}`
+
+function saveBoardCache() {
   try {
-    const data = await graphql<any>(adaptQuery(KANBAN_BOARD_QUERY, ownerType.value), { org, number: projectNumber })
+    const payload = {
+      ts: Date.now(),
+      projectTitle: projectTitle.value,
+      projectId: projectId.value,
+      statusFieldId: statusFieldId.value,
+      columns: columns.value,
+      allCards: allCards.value,
+      itemColumnMap: itemColumnMap.value,
+      totalCount: totalCount.value,
+    }
+    sessionStorage.setItem(BOARD_CACHE_KEY, JSON.stringify(payload))
+  } catch {}
+}
+
+function restoreBoardCache(): boolean {
+  try {
+    const raw = sessionStorage.getItem(BOARD_CACHE_KEY)
+    if (!raw) return false
+    const cached = JSON.parse(raw)
+    if (Date.now() - cached.ts > 10 * 60 * 1000) return false
+    projectTitle.value = cached.projectTitle
+    projectId.value = cached.projectId
+    statusFieldId.value = cached.statusFieldId
+    columns.value = cached.columns
+    allCards.value = cached.allCards
+    itemColumnMap.value = cached.itemColumnMap
+    totalCount.value = cached.totalCount
+    loading.value = false
+    return true
+  } catch { return false }
+}
+
+async function fetchAllPages(sfId: string, firstPage: { nodes: any[]; pageInfo: any }, itemsQuery?: string) {
+  const rawItems: RawItem[] = (firstPage.nodes ?? []).filter(Boolean)
+  const { cards, colMap } = processItems(rawItems, sfId)
+  const accCards: CardData[] = [...cards]
+  const accColMap: Record<string, string | null> = { ...colMap }
+  fetchedCount.value = accCards.length
+
+  let cursor = firstPage.pageInfo.endCursor
+  let hasNext = firstPage.pageInfo.hasNextPage
+
+  while (hasNext && cursor) {
+    const pageData = await graphql<any>(adaptQuery(ITEMS_PAGE_QUERY, ownerType.value), { org, number: projectNumber, cursor, query: itemsQuery })
+    const page = getOwner(pageData, ownerType.value)?.projectV2?.items
+    if (!page) break
+
+    const moreRaw: RawItem[] = (page.nodes ?? []).filter(Boolean)
+    const { cards: moreCards, colMap: moreColMap } = processItems(moreRaw, sfId)
+    accCards.push(...moreCards)
+    Object.assign(accColMap, moreColMap)
+    fetchedCount.value = accCards.length
+
+    hasNext = page.pageInfo.hasNextPage
+    cursor = page.pageInfo.endCursor
+  }
+
+  return { cards: accCards, colMap: accColMap }
+}
+
+const hasLoadedOnce = ref(false)
+
+async function loadBoard() {
+  isFetchingMore.value = false
+
+  const hadCache = restoreBoardCache()
+  const showBoard = hadCache || hasLoadedOnce.value
+  if (!showBoard) loading.value = true
+  else isRefreshing.value = true
+
+  try {
+    const itemsQuery = itemsQueryString()
+    const data = await graphql<any>(adaptQuery(KANBAN_BOARD_QUERY, ownerType.value), { org, number: projectNumber, query: itemsQuery })
     const project = getOwner(data, ownerType.value)?.projectV2
     if (!project) return
 
@@ -584,42 +733,44 @@ async function loadBoard() {
     statusFieldId.value = sf.id
     columns.value = sf.options.filter(Boolean)
 
-    const rawItems: RawItem[] = (project.items.nodes ?? []).filter(Boolean)
-    const { cards, colMap } = processItems(rawItems, sf.id)
-    allCards.value = cards
-    itemColumnMap.value = colMap
-
-    if (project.items.pageInfo.hasNextPage) {
-      isFetchingMore.value = true
-      let cursor = project.items.pageInfo.endCursor
-      let hasNext = project.items.pageInfo.hasNextPage
-      const accCards: CardData[] = [...cards]
-      const accColMap: Record<string, string | null> = { ...colMap }
-
-      while (hasNext && cursor) {
-        const pageData = await graphql<any>(adaptQuery(ITEMS_PAGE_QUERY, ownerType.value), { org, number: projectNumber, cursor })
-        const page = getOwner(pageData, ownerType.value)?.projectV2?.items
-        if (!page) break
-
-        const moreRaw: RawItem[] = (page.nodes ?? []).filter(Boolean)
-        const { cards: moreCards, colMap: moreColMap } = processItems(moreRaw, sf.id)
-        accCards.push(...moreCards)
-        Object.assign(accColMap, moreColMap)
-
-        allCards.value = [...accCards]
-        itemColumnMap.value = { ...accColMap }
-
-        hasNext = page.pageInfo.hasNextPage
-        cursor = page.pageInfo.endCursor
+    if (showBoard) {
+      if (project.items.pageInfo.hasNextPage) {
+        isFetchingMore.value = true
       }
+      const result = await fetchAllPages(sf.id, project.items, itemsQuery)
+      allCards.value = result.cards
+      itemColumnMap.value = result.colMap
       isFetchingMore.value = false
+    } else {
+      const rawItems: RawItem[] = (project.items.nodes ?? []).filter(Boolean)
+      const { cards, colMap } = processItems(rawItems, sf.id)
+      allCards.value = cards
+      itemColumnMap.value = colMap
+      loading.value = false
+
+      if (project.items.pageInfo.hasNextPage) {
+        isFetchingMore.value = true
+        const result = await fetchAllPages(sf.id, project.items, itemsQuery)
+        allCards.value = result.cards
+        itemColumnMap.value = result.colMap
+        isFetchingMore.value = false
+      }
     }
+
+    hasLoadedOnce.value = true
+    saveBoardCache()
   } finally {
     loading.value = false
+    isRefreshing.value = false
   }
 }
 
 onMounted(loadBoard)
+
+watch(dateFilter, () => {
+  sessionStorage.removeItem(BOARD_CACHE_KEY)
+  loadBoard()
+})
 
 async function handleMove(itemId: string, toColumnId: string) {
   pending.value = { ...pending.value, [itemId]: toColumnId }
@@ -964,11 +1115,46 @@ function onColumnsWheel(e: WheelEvent) {
             />
           </div>
 
+          <!-- Date filter -->
+          <div v-if="!collapsed" class="flex gap-1 mb-2">
+            <USelect
+              v-model="dateFilter"
+              :items="DATE_FILTER_OPTIONS"
+              icon="i-lucide-calendar"
+              size="xs"
+              class="flex-1"
+            />
+            <UButton
+              v-if="dateFilter !== 'all'"
+              icon="i-lucide-x"
+              size="xs"
+              color="neutral"
+              variant="ghost"
+              title="Show all time"
+              @click="dateFilter = 'all'"
+            />
+          </div>
+
+          <!-- State filter -->
+          <div v-if="!collapsed" class="flex gap-0.5 mb-2 p-0.5 rounded-md bg-elevated/50 border border-default">
+            <button
+              v-for="opt in STATE_FILTER_OPTIONS"
+              :key="opt.value"
+              class="flex-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
+              :class="stateFilter === opt.value
+                ? 'bg-primary/15 text-primary'
+                : 'text-dimmed hover:text-muted'"
+              @click="stateFilter = opt.value"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+
           <!-- Active filters -->
-          <div v-if="!collapsed && activeFilterChips.length > 0" class="mx-1 mb-2 rounded-lg bg-elevated/50 border border-default overflow-hidden">
-            <div class="flex items-center justify-between px-2.5 py-1.5 border-b border-default">
-              <span class="text-[11px] font-medium text-muted">
-                Showing {{ filteredCards.length }} of {{ allCards.length }}
+          <div v-if="!collapsed && activeFilterChips.length > 0" class="mb-2">
+            <div class="flex items-center justify-between px-2 pb-1">
+              <span class="text-[11px] text-muted">
+                {{ filteredCards.length }} of {{ allCards.length }}
               </span>
               <button
                 class="text-[11px] text-dimmed hover:text-primary transition-colors"
@@ -977,21 +1163,21 @@ function onColumnsWheel(e: WheelEvent) {
                 Reset
               </button>
             </div>
-            <div class="flex flex-wrap gap-1.5 p-2">
+            <div class="flex flex-wrap gap-1 px-1">
               <div
                 v-for="(chip, i) in activeFilterChips"
                 :key="i"
-                class="flex items-center gap-1.5 pl-1 pr-0.5 py-0.5 rounded-full text-xs transition-colors"
+                class="flex items-center gap-1 pl-1.5 pr-0.5 py-0.5 rounded-full text-xs min-w-0 max-w-full transition-colors"
                 :class="chip.type === 'exclude'
                   ? 'bg-error/10 text-error border border-error/20'
                   : 'bg-primary/10 text-primary border border-primary/20'"
               >
-                <UAvatar v-if="chip.avatar" :src="chip.avatar" :alt="chip.label" size="3xs" />
-                <UIcon v-else :name="chip.icon" class="size-3.5 ml-0.5" />
-                <span v-if="chip.type === 'exclude'" class="text-[11px] font-medium uppercase text-error/60 -mr-0.5">not</span>
-                <span class="text-[11px]">{{ chip.label }}</span>
+                <UAvatar v-if="chip.avatar" :src="chip.avatar" :alt="chip.label" size="3xs" class="shrink-0" />
+                <UIcon v-else :name="chip.icon" class="size-3 shrink-0" />
+                <span v-if="chip.type === 'exclude'" class="text-[11px] font-medium uppercase opacity-60 shrink-0">not</span>
+                <span class="text-[11px] truncate">{{ chip.label }}</span>
                 <button
-                  class="rounded-full p-0.5 hover:bg-default/50 transition-colors"
+                  class="rounded-full p-0.5 shrink-0 hover:bg-default/50 transition-colors"
                   @click="chip.remove()"
                 >
                   <UIcon name="i-lucide-x" class="size-3" />
@@ -1205,13 +1391,13 @@ function onColumnsWheel(e: WheelEvent) {
           <div class="w-8 h-8 border-2 border-muted border-t-primary rounded-full animate-spin" />
           <div class="flex flex-col items-center gap-2 w-48">
             <UProgress
-              :model-value="isFetchingMore && totalCount > 0 ? Math.round((allCards.length / totalCount) * 100) : undefined"
+              :model-value="isFetchingMore && totalCount > 0 ? Math.round((fetchedCount / totalCount) * 100) : undefined"
               :animation="!isFetchingMore ? 'carousel' : undefined"
               size="xs"
               class="w-full"
             />
             <span class="text-xs text-dimmed">
-              {{ isFetchingMore ? `${allCards.length} of ${totalCount} items` : 'Loading board…' }}
+              {{ isFetchingMore ? `${fetchedCount} of ${totalCount} items` : 'Loading board…' }}
             </span>
           </div>
         </div>
@@ -1219,6 +1405,14 @@ function onColumnsWheel(e: WheelEvent) {
 
       <!-- Board -->
       <template v-else #default>
+        <div class="relative flex flex-1 min-h-0 overflow-hidden">
+          <div v-if="backgroundLoading" class="absolute top-0 inset-x-0 z-10">
+            <UProgress
+              :model-value="isFetchingMore && totalCount > 0 ? Math.round((fetchedCount / totalCount) * 100) : undefined"
+              :animation="!isFetchingMore ? 'carousel' : undefined"
+              size="2xs"
+            />
+          </div>
         <div class="flex flex-1 min-h-0 overflow-hidden">
           <div v-if="filteredCards.length === 0 && hasAnyFilter" class="flex-1 flex flex-col items-center justify-center gap-3 py-16">
             <UIcon name="i-lucide-filter-x" class="size-10 text-dimmed" />
@@ -1244,6 +1438,8 @@ function onColumnsWheel(e: WheelEvent) {
               :sort-mode="getColumnSort('__no_status__')"
               :has-custom-sort="'__no_status__' in columnSorts"
               :sort-options="SORT_OPTIONS"
+              :animate-new="isFetchingMore"
+              :loading="backgroundLoading"
               @select="handleSelect"
               @drop="handleDrop"
               @sort="setColumnSort"
@@ -1259,6 +1455,8 @@ function onColumnsWheel(e: WheelEvent) {
               :sort-mode="getColumnSort(col.id)"
               :has-custom-sort="col.id in columnSorts"
               :sort-options="SORT_OPTIONS"
+              :animate-new="isFetchingMore"
+              :loading="backgroundLoading"
               @select="handleSelect"
               @drop="handleDrop"
               @sort="setColumnSort"
@@ -1276,7 +1474,9 @@ function onColumnsWheel(e: WheelEvent) {
             @close="closeSidebar"
             @move="handleMove"
             @assignees-changed="handleAssigneesChanged"
+            @select-card="handleSelect"
           />
+        </div>
         </div>
       </template>
     </UDashboardPanel>
