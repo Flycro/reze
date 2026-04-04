@@ -12,10 +12,14 @@ const props = withDefaults(defineProps<{
   sortMode?: string
   hasCustomSort?: boolean
   sortOptions?: Array<{ label: string; value: string }>
+  animateNew?: boolean
+  loading?: boolean
 }>(), {
   droppable: true,
   sortMode: 'default',
   hasCustomSort: false,
+  animateNew: false,
+  loading: false,
 })
 
 const emit = defineEmits<{
@@ -29,6 +33,25 @@ const isTouchDevice = import.meta.client && ('ontouchstart' in window || navigat
 
 const accentColor = computed(() => COLOR_MAP[props.color] ?? '#8b949e')
 const isEmpty = computed(() => props.cards.length === 0)
+
+const knownIds = new Set<string>()
+const newIds = shallowRef(new Set<string>())
+
+watch(() => props.cards, (cards) => {
+  if (!props.animateNew) {
+    for (const c of cards) knownIds.add(c.id)
+    return
+  }
+  const fresh = new Set<string>()
+  for (const c of cards) {
+    if (!knownIds.has(c.id)) fresh.add(c.id)
+    knownIds.add(c.id)
+  }
+  if (fresh.size > 0) {
+    newIds.value = fresh
+    setTimeout(() => { newIds.value = new Set() }, 350)
+  }
+}, { immediate: true })
 
 function onDragOver(e: DragEvent) {
   if (!props.droppable) return
@@ -100,7 +123,8 @@ function onDrop(e: DragEvent) {
           </div>
         </template>
       </UPopover>
-      <UBadge v-if="!isEmpty" size="sm" variant="subtle" color="neutral">
+      <UBadge v-if="!isEmpty" size="sm" variant="subtle" color="neutral" class="gap-1">
+        <div v-if="loading" class="size-2.5 border-[1.5px] border-muted border-t-primary rounded-full animate-spin" />
         {{ cards.length }}
       </UBadge>
     </div>
@@ -118,6 +142,8 @@ function onDrop(e: DragEvent) {
       <div
         v-for="card in cards"
         :key="card.id"
+        class="card-wrapper"
+        :class="{ 'card-new': newIds.has(card.id) }"
         :draggable="!isTouchDevice"
         @dragstart="(e: DragEvent) => onDragStart(e, card)"
       >
@@ -126,3 +152,21 @@ function onDrop(e: DragEvent) {
     </div>
   </div>
 </template>
+
+<style scoped>
+.card-wrapper {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.card-new {
+  animation: card-fade-in 0.3s ease both;
+}
+
+@keyframes card-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+</style>
