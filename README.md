@@ -13,11 +13,13 @@
 ## Features
 
 - **Kanban board** for GitHub Projects V2 with drag-and-drop
-- **Combinable filters** by user, repo, and assignment status with Shift+click to exclude
+- **Sub-issues & parent links** shown on cards and in the sidebar with progress bars
+- **Combinable filters** by user, repo, state, date range, and assignment status with Shift+click to exclude
 - **Command palette** (`Cmd+K`) with bang patterns: `@user`, `/repo`, `#number`, `>action`
-- **Card sidebar** with timeline, comments, assignees, and move actions
-- **Create issues** directly from the board
+- **Card sidebar** with timeline, comments, assignees, sub-issues, and move actions
+- **Create issues** with repository issue template support (markdown and YAML form templates)
 - **Keyboard-first** workflow with 15+ shortcuts (press `?` to see all)
+- **Session caching** for instant board loads on revisit with background refresh
 - **Theme picker** with customizable primary and neutral colors
 - **PWA** with offline caching for GitHub API responses and avatars
 - **Mobile responsive** with snap-scrolling columns not recommended though

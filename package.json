@@ -1,6 +1,6 @@
 {
   "name": "reze",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,11 +9,13 @@
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "lint": "eslint .",
+    "test": "vitest",
     "lint:fix": "eslint . --fix",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
     "@nuxt/ui": "^4.6.0",
+    "confbox": "^0.2.4",
     "nuxt": "^4.4.2",
     "tailwindcss": "^4.2.2",
     "vue": "^3.5.30",
@@ -22,8 +24,10 @@
   "devDependencies": {
     "@iconify-json/lucide": "^1.2.98",
     "@nuxt/eslint": "^1.15.2",
+    "@nuxt/test-utils": "^4.0.0",
     "@vite-pwa/nuxt": "^1.1.1",
     "eslint": "^9.39.4",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.2"
   }
 }
